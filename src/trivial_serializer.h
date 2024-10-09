@@ -286,7 +286,6 @@ namespace dg::trivial_serializer::archive{
             put(tmp, status);
 
             if (status){
-                // static_assert(noexcept(obj_type()));
                 auto obj = obj_type();
                 put(tmp, obj);
                 data = std::move(obj);

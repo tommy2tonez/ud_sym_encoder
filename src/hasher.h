@@ -90,10 +90,6 @@ namespace dg::hasher{
         return h1;
     }
 
-    // static constexpr auto cmurmur_hash(size_t len, const uint32_t seed = 0xFF) -> uint64_t{
-        
-    // } 
-
     template <size_t LEN, size_t SEED = 0xFF>
     static constexpr auto murmur_hash(const char * buf, const std::integral_constant<size_t, LEN>, const std::integral_constant<uint64_t, SEED> seed = std::integral_constant<size_t, SEED>{}) -> uint64_t{ //this should be compiler responsibility - yet reimplementation for now (because of compiler limitation)
 

@@ -7,18 +7,13 @@
 #include <string>
 #include <stdexcept>
 #include "compact_serializer.h"
+#include <bit>
+#include <algorithm>
 
 namespace dg::ud_sym_encoder{
 
     struct bad_encoding_format: std::exception{}; 
     struct invalid_argument: std::exception{}; 
-
-    using mt19937 = std::mersenne_twister_engine<uint64_t, 64, 312, 156, 31,
-                                                    0xb5026f5aa96619e9ULL, 29,
-                                                    0x5555555555555555ULL, 17,
-                                                    0x71d67fffeda60000ULL, 37,
-                                                    0xfff7eee000000000ULL, 43,
-                                                    6364136223846793005ULL>;
 
     struct EncoderInterface{
         virtual ~EncoderInterface() noexcept = default;
@@ -110,24 +105,17 @@ namespace dg::ud_sym_encoder{
         private:
 
             std::string secret;
-            const size_t max_encoding_length;
             mt19937 salt_randgen;
             
         public:
 
 
             Mt19937Encoder(std::string secret,
-                            size_t max_encoding_length,
                             mt19937 salt_randgen) noexcept: secret(std::move(secret)),
-                                                            max_encoding_length(max_encoding_length),
                                                             salt_randgen(std::move(salt_randgen)){}
 
             auto encode(const std::string& arg) -> std::string{
                 
-                if (arg.size() > this->max_encoding_length){
-                    throw invalid_argument();
-                }
-
                 uint64_t salt       = this->salt_randgen();
                 uint64_t seed       = this->randomizer_seed(this->secret, salt);
                 auto randomizer     = mt19937{seed};
@@ -183,14 +171,14 @@ namespace dg::ud_sym_encoder{
             template <class Randomizer>
             auto byte_encode(char key, Randomizer& randomizer) -> char{
 
-                std::vector<uint8_t> dict = get_byte_dict(randomizer);
+                std::vector<uint8_t> dict = this->get_byte_dict(randomizer);
                 return std::bit_cast<char>(dict[std::bit_cast<uint8_t>(key)]);
             }
 
             template <class Randomizer>
             auto byte_decode(char value, Randomizer& randomizer) -> char{
                 
-                std::vector<uint8_t> dict = get_byte_dict(randomizer);
+                std::vector<uint8_t> dict = this->get_byte_dict(randomizer);
                 uint8_t key = std::distance(dict.begin(), std::find(dict.begin(), dict.end(), std::bit_cast<uint8_t>(value)));
 
                 return std::bit_cast<char>(key);
@@ -230,8 +218,8 @@ namespace dg::ud_sym_encoder{
         public:
 
             DoubleEncoder(std::unique_ptr<EncoderInterface> first_encoder,
-                            std::unique_ptr<EncoderInterface> second_encoder) noexcept: first_encoder(std::move(first_encoder)),
-                                                                                        second_encoder(std::move(second_encoder)){}
+                          std::unique_ptr<EncoderInterface> second_encoder) noexcept: first_encoder(std::move(first_encoder)),
+                                                                                      second_encoder(std::move(second_encoder)){}
             
             auto encode(const std::string& msg) -> std::string{
                 
@@ -244,17 +232,15 @@ namespace dg::ud_sym_encoder{
             }
     };
 
-    auto spawn_encoder(const std::string& secret, size_t max_encoding_len) -> std::unique_ptr<EncoderInterface>{
+    auto spawn_encoder(const std::string& secret) -> std::unique_ptr<EncoderInterface>{
 
         uint64_t uint_secret = dg::hasher::murmur_hash(secret.data(), secret.size());
         std::unique_ptr<EncoderInterface> integrity_encoder = std::make_unique<MurMurEncoder>(uint_secret);
-        std::unique_ptr<EncoderInterface> unif_dist_encoder = std::make_unique<Mt19937Encoder>(secret, max_encoding_len, mt19937{}); 
+        std::unique_ptr<EncoderInterface> unif_dist_encoder = std::make_unique<Mt19937Encoder>(secret, mt19937{}); 
         std::unique_ptr<EncoderInterface> combined_encoder  = std::make_unique<DoubleEncoder>(std::move(integrity_encoder), std::move(unif_dist_encoder));
 
         return combined_encoder;
     }
 }
-
-
 
 #endif

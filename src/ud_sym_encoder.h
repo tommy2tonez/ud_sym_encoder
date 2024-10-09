@@ -136,7 +136,7 @@ namespace dg::ud_sym_encoder{
                 for (size_t i = 0u; i < arg.size(); ++i){
                     encoded[i] = this->byte_encode(arg[i], randomizer);
                 }
-                
+
                 return this->serialize(Mt19937Message{salt, std::move(encoded)}); 
             }
 
@@ -156,7 +156,7 @@ namespace dg::ud_sym_encoder{
         
         private:
 
-            auto randomizer_seed(const std::string& secret, uint64_t salt) noexcept -> uint64_t{
+            auto randomizer_seed(const std::string& secret, uint64_t salt) -> uint64_t{
                 
                 std::string ss(dg::trivial_serializer::size(salt), ' ');
                 dg::trivial_serializer::serialize_into(ss.data(), salt);
@@ -166,7 +166,7 @@ namespace dg::ud_sym_encoder{
             }
 
             template <class Randomizer>
-            auto get_byte_dict(Randomizer& randomizer) noexcept -> std::vector<uint8_t>{
+            auto get_byte_dict(Randomizer& randomizer) -> std::vector<uint8_t>{
                 
                 std::vector<uint8_t> rs(256);
                 std::iota(rs.begin(), rs.end(), 0u);
@@ -181,14 +181,14 @@ namespace dg::ud_sym_encoder{
             }
 
             template <class Randomizer>
-            auto byte_encode(char key, Randomizer& randomizer) noexcept -> char{
+            auto byte_encode(char key, Randomizer& randomizer) -> char{
 
                 std::vector<uint8_t> dict = get_byte_dict(randomizer);
                 return std::bit_cast<char>(dict[std::bit_cast<uint8_t>(key)]);
             }
 
             template <class Randomizer>
-            auto byte_decode(char value, Randomizer& randomizer) noexcept -> char{
+            auto byte_decode(char value, Randomizer& randomizer) -> char{
                 
                 std::vector<uint8_t> dict = get_byte_dict(randomizer);
                 uint8_t key = std::distance(dict.begin(), std::find(dict.begin(), dict.end(), std::bit_cast<uint8_t>(value)));

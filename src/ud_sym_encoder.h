@@ -136,26 +136,13 @@ namespace dg::ud_sym_encoder{
                 for (size_t i = 0u; i < arg.size(); ++i){
                     encoded[i] = this->byte_encode(arg[i], randomizer);
                 }
-
-                auto msg            = Mt19937Message{salt, std::move(encoded)};
-                auto bstream        = std::string(dg::compact_serializer::integrity_size(msg), ' ');
-                dg::compact_serializer::integrity_serialize_into(bstream.data(), msg);
-
-                return bstream; 
+                
+                return this->serialize(Mt19937Message{salt, std::move(encoded)}); 
             }
 
             auto decode(const std::string& arg) -> std::string{
 
-                Mt19937Message msg{};
-                
-                try{
-                    dg::compact_serializer::integrity_deserialize_into(msg, arg.data(), arg.size());
-                } catch (dg::compact_serializer::bad_encoding_format& err){
-                    throw bad_encoding_format();
-                } catch (...){
-                    std::rethrow_exception(std::current_exception());
-                }
-
+                Mt19937Message msg  = this->deserialize(arg);                
                 uint64_t seed       = this->randomizer_seed(this->secret, msg.salt);
                 auto randomizer     = mt19937{seed};
                 auto decoded        = std::string(msg.encoded.size(), ' ');
@@ -208,6 +195,30 @@ namespace dg::ud_sym_encoder{
 
                 return std::bit_cast<char>(key);
             }
+
+            auto serialize(const Mt19937Message& msg) -> std::string{
+
+                size_t len = dg::trivial_serializer::size(uint64_t{}) + msg.encoded.size(); 
+                std::string rs(len, ' ');
+                char * last = dg::trivial_serializer::serialize_into(rs.data(), msg.salt);
+                std::copy(msg.encoded.begin(), msg.encoded.end(), last);
+
+                return rs;
+            }
+
+            auto deserialize(const std::string& bstream) -> Mt19937Message{
+                
+                if (bstream.size() < dg::trivial_serializer::size(uint64_t{})){
+                    throw bad_encoding_format{};
+                }
+
+                Mt19937Message rs{};
+                const char * last = dg::trivial_serializer::deserialize_into(rs.salt, bstream.data()); 
+                std::copy(last, bstream.data() + bstream.size(), std::back_inserter(rs.encoded));
+
+                return rs;
+            }
+
     };
 
     class DoubleEncoder: public virtual EncoderInterface{

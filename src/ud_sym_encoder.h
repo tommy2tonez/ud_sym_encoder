@@ -148,30 +148,35 @@ namespace dg::ud_sym_encoder{
                 
                 std::string ss(dg::trivial_serializer::size(salt), ' ');
                 dg::trivial_serializer::serialize_into(ss.data(), salt);
-                std::string cat = secret + ss;
+                std::string cat = secret + ss; 
 
                 return dg::hasher::murmur_hash(cat.data(), cat.size());
             }
 
             template <class Randomizer>
-            auto get_byte_dict(Randomizer&& randomizer) -> std::vector<uint8_t>{
+            auto get_byte_dict(Randomizer& randomizer) -> std::vector<uint8_t>{
                 
                 std::vector<uint8_t> rs(256);
                 std::iota(rs.begin(), rs.end(), 0u);
-                std::shuffle(rs.begin(), rs.end(), randomizer); //leave the "equal probability of distribution" business to the std for the moment
+
+                for (size_t i = 0u; i < 256; ++i){
+                    size_t lhs_idx = static_cast<size_t>(randomizer()) % 256;
+                    size_t rhs_idx = static_cast<size_t>(randomizer()) % 256;
+                    std::swap(rs[lhs_idx], rs[rhs_idx]);
+                }
 
                 return rs;
             }
 
             template <class Randomizer>
-            auto byte_encode(char key, Randomizer&& randomizer) -> char{
+            auto byte_encode(char key, Randomizer& randomizer) -> char{
 
                 std::vector<uint8_t> dict = this->get_byte_dict(randomizer);
                 return std::bit_cast<char>(dict[std::bit_cast<uint8_t>(key)]);
             }
 
             template <class Randomizer>
-            auto byte_decode(char value, Randomizer&& randomizer) -> char{
+            auto byte_decode(char value, Randomizer& randomizer) -> char{
                 
                 std::vector<uint8_t> dict = this->get_byte_dict(randomizer);
                 uint8_t key = std::distance(dict.begin(), std::find(dict.begin(), dict.end(), std::bit_cast<uint8_t>(value)));

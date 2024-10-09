@@ -218,7 +218,6 @@ namespace dg::ud_sym_encoder{
 
                 return rs;
             }
-
     };
 
     class DoubleEncoder: public virtual EncoderInterface{

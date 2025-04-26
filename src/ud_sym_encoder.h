@@ -231,7 +231,7 @@ namespace dg::ud_sym_encoder{
                 return this->first_encoder->decode(this->second_encoder->decode(msg));
             }
     };
-
+    
     auto spawn_encoder(const std::string& secret) -> std::unique_ptr<EncoderInterface>{
 
         uint64_t uint_secret = dg::hasher::murmur_hash(secret.data(), secret.size());

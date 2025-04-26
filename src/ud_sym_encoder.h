@@ -77,17 +77,17 @@ namespace dg::ud_sym_encoder{
     };
 
     struct Mt19937Message{
-        uint64_t salt;
+        std::string subsecret_domain_space;
         std::string encoded;
 
         template <class Reflector>
         void dg_reflect(const Reflector& reflector){
-            reflector(salt, encoded);
+            reflector(subsecret_domain_space, encoded);
         }
 
         template <class Reflector>
         void dg_reflect(const Reflector& reflector) const{
-            reflector(salt, encoded);
+            reflector(subsecret_domain_space, encoded);
         }
     };
 
@@ -99,43 +99,54 @@ namespace dg::ud_sym_encoder{
                                                  6364136223846793005ULL>;
 
     //we have problems
+    //how to fix this?
+    //we have to protect the subsecret by specifying a padding range, every char is protected by the secret
+    //and we actually has to do the randomizer_seed for every char
+
     class Mt19937Encoder: public virtual EncoderInterface{
 
         private:
 
             std::string secret;
             mt19937 salt_randgen;
-            
+            size_t subsecret_extra_sz; 
+
         public:
 
 
             Mt19937Encoder(std::string secret,
-                           mt19937 salt_randgen) noexcept: secret(std::move(secret)),
-                                                           salt_randgen(std::move(salt_randgen)){}
+                           mt19937 salt_randgen,
+                           size_t subsecret_extra_sz) noexcept: secret(std::move(secret)),
+                                                                salt_randgen(std::move(salt_randgen)),
+                                                                subsecret_extra_sz(subsecret_extra_sz){}
 
             static inline constexpr uint32_t MT19937_SERIALIZATION_SECRET = 1422722760ULL;
 
             auto encode(const std::string& arg) -> std::string{
-                
-                uint64_t salt       = this->salt_randgen();
-                uint64_t subsecret  = this->randomizer_seed(this->secret, salt);
-                auto randomizer     = mt19937{subsecret};
-                auto encoded        = std::string(arg.size(), ' ');
+
+                //the way to work correctly is to actually cat the char to the org secret to create a dictionary for every char
+
+                size_t salt_sz              = arg.size() + this->subsecret_extra_sz; 
+                std::string domain_space    = this->randomize_random_buffer(salt_sz, this->salt_randgen); 
+                std::string projected_space = this->project_salt_buffer(domain_space, this->secret); 
+                auto randomizer             = xrange_mt19937(projected_space); 
+                auto encoded                = std::string(' ', arg.size()); 
 
                 for (size_t i = 0u; i < arg.size(); ++i){
                     encoded[i] = this->byte_encode(arg[i], randomizer);
                 }
 
-                return this->serialize(Mt19937Message{.salt     = salt,
-                                                      .encoded  = std::move(encoded)}); 
+                return this->serialize(Mt19937Message{.subsecret_domain_space   = domain_space,
+                                                      .encoded                  = std::move(encoded)}); 
             }
 
             auto decode(const std::string& arg) -> std::string{
 
-                Mt19937Message msg  = this->deserialize(arg);                
-                uint64_t subsecret  = this->randomizer_seed(this->secret, msg.salt);
-                auto randomizer     = mt19937{subsecret};
-                auto decoded        = std::string(msg.encoded.size(), ' ');
+                Mt19937Message msg          = this->deserialize(arg);
+                std::string domain_space    = msg.subsecret_domain_space;
+                std::string projected_space = this->project_salt_buffer(domain_space, this->secret); 
+                auto randomizer             = xrange_mt19937(projected_space);
+                auto decoded                = std::string(msg.encoded.size(), ' ');
 
                 for (size_t i = 0u; i < msg.encoded.size(); ++i){
                     decoded[i] = this->byte_decode(msg.encoded[i], randomizer);
@@ -193,7 +204,13 @@ namespace dg::ud_sym_encoder{
 
             auto deserialize(const std::string& bstream) -> Mt19937Message{
 
-                return dg::compact_serializer::integrity_deserialize<Mt19937Message>(bstream, MT19937_SERIALIZATION_SECRET);             
+                Mt19937Message rs = dg::compact_serializer::integrity_deserialize<Mt19937Message>(bstream, MT19937_SERIALIZATION_SECRET);             
+
+                if (rs.subsecret_domain_space.size() != rs.encoded.size() + this->subsecret_extra_sz){
+                    throw corrupted_format();
+                }
+
+                return rs;
             }
     };
 

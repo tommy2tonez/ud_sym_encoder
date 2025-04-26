@@ -1,5 +1,7 @@
-#ifndef __DG_COMPACT_SERIALIZER_H__
-#define __DG_COMPACT_SERIALIZER_H__
+#ifndef __DG_compact_serializer_H__
+#define __DG_compact_serializer_H__
+
+//define HEADER_CONTROL 2
 
 #include <string>
 #include <memory>
@@ -19,13 +21,26 @@
 
 namespace dg::compact_serializer::constants{
 
-    static constexpr auto endianness    = std::endian::little;
+    static constexpr auto endianness                            = std::endian::little;
+    static constexpr bool IS_SAFE_INTEGER_CONVERSION_ENABLED    = true;
 }
 
 namespace dg::compact_serializer::types{
 
-    using hash_type     = uint64_t; 
+    using hash_type     = std::pair<uint64_t, uint64_t>; //alright this seems silly, we are to increase the chances of 10 ** 18 -> 10 ** 39 (never gonna happen), we actually chance better than RAM https://www.cs.toronto.edu/~bianca/papers/sigmetrics09.pdf, https://en.wikipedia.org/wiki/ECC_memory
+                                                         //the only way to be successful in the career is to not trust everything, assume we are to deploy a massive 1 billion devices training system, we are gonna see errors very often
     using size_type     = uint64_t;
+}
+
+namespace dg::compact_serializer::exception_space{
+
+    struct corrupted_format: std::exception{
+
+        inline auto what() const noexcept -> const char *{
+
+            return "corrupted_format";
+        }
+    };
 }
 
 namespace dg::compact_serializer::types_space{
@@ -97,6 +112,15 @@ namespace dg::compact_serializer::types_space{
 
     template <class T>
     struct is_dg_arithmetic<T, std::void_t<std::enable_if_t<std::is_floating_point_v<T>>>>: std::bool_constant<std::numeric_limits<T>::is_iec559>{}; 
+ 
+    template <class T>
+    struct is_byte_stream_container: std::false_type{};
+
+    template <class ...Args>
+    struct is_byte_stream_container<std::vector<char, Args...>>: std::true_type{};
+
+    template <class ...Args>
+    struct is_byte_stream_container<std::basic_string<char, Args...>>: std::true_type{};
 
     template <class T, class = void>
     struct container_value_or_empty{};
@@ -114,35 +138,73 @@ namespace dg::compact_serializer::types_space{
         using type = std::pair<typename T::key_type, typename T::mapped_type>; //I dont want to complicate this further by adding const to key_type (since this is an application) - 
     };
 
+    template <class T>
+    using containee_or_none_t = std::conditional_t<std::disjunction_v<is_vector<T>, is_unordered_set<T>, is_set<T>, is_basic_string<T>>,
+                                                                      container_value_or_empty<T>,
+                                                                      std::conditional_t<std::disjunction_v<is_unordered_map<T>, is_map<T>>, 
+                                                                                         container_bucket_or_empty<T>, 
+                                                                                         void>>;
 
     template <class T>
-    using containee_or_empty = std::conditional_t<std::disjunction_v<is_vector<T>, is_unordered_set<T>, is_set<T>, is_basic_string<T>>,
-                                                                     container_value_or_empty<T>,
-                                                                     std::conditional_t<std::disjunction_v<is_unordered_map<T>, is_map<T>>, 
-                                                                                        container_bucket_or_empty<T>, 
-                                                                                        void>>;
+    using containee_t = typename containee_or_none_t<T>::type;
+
+    template <class T, class = void>
+    struct containee_or_empty{
+        using type = void;
+    };
 
     template <class T>
-    using containee_t                           = typename containee_or_empty<T>::type;
+    struct containee_or_empty<T, std::void_t<containee_t<T>>>{
+        using type = containee_t<T>;
+    };
 
     template <class T>
-    static constexpr bool is_container_v        = std::disjunction_v<is_vector<T>, is_unordered_map<T>, is_unordered_set<T>, is_map<T>, is_set<T>, is_basic_string<T>>;
+    using containee_or_empty_t = typename containee_or_empty<T>::type; 
+
+    //see: https://en.cppreference.com/w/cpp/language/types
 
     template <class T>
-    static constexpr bool is_tuple_v            = is_tuple<T>::value; 
+    static inline constexpr bool has_unique_serializable_representations_v              = std::disjunction_v<std::is_same<T, int8_t>, std::is_same<T, uint8_t>, 
+                                                                                                             std::is_same<T, char>, std::is_same<T, unsigned char>, std::is_same<T, signed char>>;
 
     template <class T>
-    static constexpr bool is_unique_ptr_v       = is_unique_ptr<T>::value;
+    static inline constexpr bool has_unique_serializable_sameendian_representations_v   = std::disjunction_v<std::is_same<T, int8_t>, std::is_same<T, uint8_t>, 
+                                                                                                             std::is_same<T, char>, std::is_same<T, unsigned char>, std::is_same<T, signed char>,
+                                                                                                             std::is_same<T, int16_t>, std::is_same<T, uint16_t>, 
+                                                                                                             std::is_same<T, int32_t>, std::is_same<T, uint32_t>, 
+                                                                                                             std::is_same<T, int64_t>, std::is_same<T, uint64_t>>;
 
     template <class T>
-    static constexpr bool is_optional_v         = is_optional<T>::value;
+    static inline constexpr bool is_cpyable_linear_container_v                          = std::disjunction_v<is_vector<T>, is_basic_string<T>> && (has_unique_serializable_representations_v<containee_or_empty_t<T>> || has_unique_serializable_sameendian_representations_v<containee_or_empty_t<T>> && (std::endian::native == constants::endianness)); //this requires inter-compatible with noncpyable_linear
 
     template <class T>
-    static constexpr bool is_reflectible_v      = is_reflectible<T>::value;
+    static inline constexpr bool is_noncpyable_linear_container_v                       = std::disjunction_v<is_vector<T>, is_basic_string<T>> && !is_cpyable_linear_container_v<T>;
+
+    template <class T>
+    static inline constexpr bool is_nonlinear_container_v                               = std::disjunction_v<is_unordered_map<T>, is_map<T>, is_set<T>>;
+
+    template <class T>
+    static inline constexpr bool is_tuple_v                                             = is_tuple<T>::value; 
+
+    template <class T>
+    static inline constexpr bool is_unique_ptr_v                                        = is_unique_ptr<T>::value;
+
+    template <class T>
+    static inline constexpr bool is_optional_v                                          = is_optional<T>::value;
+
+    template <class T>
+    static inline constexpr bool is_reflectible_v                                       = is_reflectible<T>::value;
+
+    template <class T>
+    static inline constexpr bool is_dg_arithmetic_v                                     = is_dg_arithmetic<T>::value;
+
+    template <class T>
+    static inline constexpr bool is_byte_stream_container_v                             = is_byte_stream_container<T>::value;
 
     template <class T>
     struct base_type: std::enable_if<true, T>{};
 
+    //alright, I dont really know if this is future-proof, let's make it defined by using defined use-cases for now, we dont have time to iterate through every possibility
     template <class T>
     struct base_type<const T>: base_type<T>{};
 
@@ -157,9 +219,6 @@ namespace dg::compact_serializer::types_space{
 
     template <class T>
     using base_type_t = typename base_type<T>::type;
-    
-    template <class T>
-    static constexpr bool is_dg_arithmetic_v    = is_dg_arithmetic<T>::value;
 }
 
 namespace dg::compact_serializer::utility{
@@ -216,10 +275,9 @@ namespace dg::compact_serializer::utility{
         }
     };
 
-    auto hash(const char * buf, size_t sz) noexcept -> hash_type{
-        
-        static_assert(std::is_same_v<hash_type, size_t>); //stricter req for now
-        return dg::hasher::hash_bytes(buf, sz);
+    auto hash(const char * buf, size_t sz, uint32_t secret) noexcept -> hash_type{
+
+        return dg::hasher::murmur_hash_base(buf, sz, secret);
     }
 
     template <class T, std::enable_if_t<std::disjunction_v<types_space::is_vector<T>, 
@@ -244,6 +302,55 @@ namespace dg::compact_serializer::utility{
         };
 
         return inserter;
+    }
+
+    template <class T1, class T>
+    constexpr auto safe_integer_cast(T value) noexcept -> T1{
+
+        static_assert(std::numeric_limits<T>::is_integer);
+        static_assert(std::numeric_limits<T1>::is_integer);
+
+        if constexpr(constants::IS_SAFE_INTEGER_CONVERSION_ENABLED){
+            if constexpr(std::is_unsigned_v<T> && std::is_unsigned_v<T1>){
+                (void) value;
+            } else if constexpr(std::is_signed_v<T> && std::is_signed_v<T1>){
+                (void) value;
+            } else{
+                if constexpr(std::is_signed_v<T>){
+                    if constexpr(sizeof(T) > sizeof(T1)){
+                        (void) value;
+                    } else{
+                        if (value < 0){
+                            std::abort();
+                        } else{
+                            return value; //sizeof(signed) <= sizeof(unsigned)
+                        }
+                    }
+                } else{
+                    if constexpr(sizeof(T1) > sizeof(T)){
+                        (void) value;
+                    } else{
+                        if (value > std::numeric_limits<T1>::max()){
+                            std::abort();
+                        } else{
+                            return value; //sizeof(unsigned) >= sizeof(signed)
+                        }
+                    }
+                }
+            }
+
+            if (value > std::numeric_limits<T1>::max()){
+                std::abort();
+            }
+
+            if (value < std::numeric_limits<T1>::min()){
+                std::abort();
+            }
+
+            return value;
+        } else{
+            return value;
+        }
     }
 }
 
@@ -297,7 +404,7 @@ namespace dg::compact_serializer::archive{
             return rs;
         }
 
-        template <class T, std::enable_if_t<types_space::is_container_v<types_space::base_type_t<T>>, bool> = true>
+        template <class T, std::enable_if_t<types_space::is_noncpyable_linear_container_v<types_space::base_type_t<T>> || types_space::is_nonlinear_container_v<types_space::base_type_t<T>>, bool> = true>
         auto count(T&& data) const noexcept -> size_t{
             
             size_t rs = this->count(types::size_type{});
@@ -307,6 +414,12 @@ namespace dg::compact_serializer::archive{
             }
 
             return rs;
+        }
+
+        template <class T, std::enable_if_t<types_space::is_cpyable_linear_container_v<types_space::base_type_t<T>>, bool> = true>
+        auto count(T&& data) const noexcept -> size_t{
+
+            return this->count(types::size_type{}) + static_cast<size_t>(data.size()) * sizeof(types_space::containee_t<types_space::base_type_t<T>>);
         }
 
         template <class T, std::enable_if_t<types_space::is_reflectible_v<types_space::base_type_t<T>>, bool> = true>
@@ -323,13 +436,13 @@ namespace dg::compact_serializer::archive{
     };
 
     struct Forward{
-        
+
         using Self = Forward;
 
         template <class T, std::enable_if_t<types_space::is_dg_arithmetic_v<types_space::base_type_t<T>>, bool> = true>
         void put(char *& buf, T&& data) const noexcept{
             
-            utility::SyncedEndiannessService::dump(buf, std::forward<T>(data));
+            compact_serializer::utility::SyncedEndiannessService::dump(buf, std::forward<T>(data));
             std::advance(buf, sizeof(types_space::base_type_t<T>));
         }
 
@@ -364,15 +477,30 @@ namespace dg::compact_serializer::archive{
             }(buf, std::forward<T>(data), idx_seq);
         }
 
-        template <class T, std::enable_if_t<types_space::is_container_v<types_space::base_type_t<T>>, bool> = true>
+        template <class T, std::enable_if_t<types_space::is_noncpyable_linear_container_v<types_space::base_type_t<T>> || types_space::is_nonlinear_container_v<types_space::base_type_t<T>>, bool> = true>
         void put(char *& buf, T&& data) const noexcept{
-            
-            this->put(buf, static_cast<types::size_type>(data.size()));
 
-            //optimizable - worth or not worth it
+            this->put(buf, compact_serializer::utility::safe_integer_cast<types::size_type>(data.size()));
+
             for (const auto& e: data){
                 this->put(buf, e);
             }
+        }
+
+        template <class T, std::enable_if_t<types_space::is_cpyable_linear_container_v<types_space::base_type_t<T>>, bool> = true>
+        void put(char *& buf, T&& data) const noexcept{
+
+            using base_type = types_space::base_type_t<T>;
+            using elem_type = types_space::containee_t<base_type>;
+
+            this->put(buf, compact_serializer::utility::safe_integer_cast<types::size_type>(data.size()));
+
+            void * dst          = buf;
+            const void * src    = data.data();
+            size_t cpy_sz       = data.size() * sizeof(elem_type);  
+
+            std::memcpy(dst, src, cpy_sz);
+            std::advance(buf, cpy_sz);
         }
 
         template <class T, std::enable_if_t<types_space::is_reflectible_v<types_space::base_type_t<T>>, bool> = true>
@@ -394,7 +522,7 @@ namespace dg::compact_serializer::archive{
         void put(const char *& buf, T&& data) const{
 
             using base_type = types_space::base_type_t<T>;
-            data = utility::SyncedEndiannessService::load<base_type>(buf);
+            data = compact_serializer::utility::SyncedEndiannessService::load<base_type>(buf);
             std::advance(buf, sizeof(base_type));
         }
 
@@ -424,7 +552,7 @@ namespace dg::compact_serializer::archive{
             if (status){
                 auto obj = containee_type{};
                 this->put(buf, obj);
-                data = std::optional<containee_type>(std::in_place_t{}, std::move(obj)); //fine
+                data = std::optional<containee_type>(std::in_place_t{}, std::move(obj));
             } else{
                 data = std::nullopt;
             }
@@ -441,23 +569,40 @@ namespace dg::compact_serializer::archive{
             }(buf, std::forward<T>(data), idx_seq);
         }
 
-        template <class T, std::enable_if_t<types_space::is_container_v<types_space::base_type_t<T>>, bool> = true>
+        template <class T, std::enable_if_t<types_space::is_noncpyable_linear_container_v<types_space::base_type_t<T>> || types_space::is_nonlinear_container_v<types_space::base_type_t<T>>, bool> = true>
         void put(const char *& buf, T&& data) const{
             
             using base_type = types_space::base_type_t<T>;
             using elem_type = types_space::containee_t<base_type>;
+            
             auto sz         = types::size_type{};
-            auto isrter     = utility::get_inserter<base_type>();
-
+            auto isrter     = compact_serializer::utility::get_inserter<base_type>();
             this->put(buf, sz); 
             data.reserve(sz);
 
-            //optimizable - worth or not worth it
             for (size_t i = 0; i < sz; ++i){
                 elem_type e{};
                 this->put(buf, e);
                 isrter(data, std::move(e));
             }
+        }
+
+        template <class T, std::enable_if_t<types_space::is_cpyable_linear_container_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, T&& data) const{
+
+            using base_type = types_space::base_type_t<T>;
+            using elem_type = types_space::containee_t<base_type>;
+            
+            auto sz = types::size_type{};
+            this->put(buf, sz);
+            data.resize(sz);
+
+            void * dst          = data.data();
+            const void * src    = buf;
+            size_t cpy_sz       = sz * sizeof(elem_type); 
+
+            std::memcpy(dst, src, cpy_sz);
+            std::advance(buf, cpy_sz);
         }
 
         template <class T, std::enable_if_t<types_space::is_reflectible_v<types_space::base_type_t<T>>, bool> = true>
@@ -470,77 +615,257 @@ namespace dg::compact_serializer::archive{
             data.dg_reflect(archiver);
         }
     };
+
+    struct SafeBackward{
+
+        using Self = SafeBackward;
+
+        template <class T, std::enable_if_t<types_space::is_dg_arithmetic_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            using base_type = types_space::base_type_t<T>;
+
+            if (buf_sz < sizeof(base_type)){
+                throw dg::compact_serializer::exception_space::corrupted_format();
+            }
+
+            data    = compact_serializer::utility::SyncedEndiannessService::load<base_type>(buf);
+            std::advance(buf, sizeof(base_type));
+            buf_sz  -= sizeof(base_type);
+        }
+
+        template <class T, std::enable_if_t<types_space::is_unique_ptr_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            using containee_type = typename types_space::base_type_t<T>::element_type;
+            bool status = {};
+            this->put(buf, buf_sz, status);
+
+            if (status){
+                auto obj = containee_type{};
+                this->put(buf, buf_sz, obj);
+                data = std::make_unique<containee_type>(std::move(obj));
+            } else{
+                data = nullptr;
+            }
+        }
+
+        template <class T, std::enable_if_t<types_space::is_optional_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            using containee_type = typename types_space::base_type_t<T>::value_type;
+            bool status = {};
+            this->put(buf, buf_sz, status);
+
+            if (status){
+                auto obj = containee_type{};
+                this->put(buf, buf_sz, obj);
+                data = std::optional<containee_type>(std::in_place_t{}, std::move(obj));
+            } else{
+                data = std::nullopt;
+            }
+        }
+
+        template <class T, std::enable_if_t<types_space::is_tuple_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            using base_type     = types_space::base_type_t<T>;
+            const auto idx_seq  = std::make_index_sequence<std::tuple_size_v<base_type>>{};
+
+            []<size_t ...IDX>(const char *& buf, size_t& buf_sz, T&& data, const std::index_sequence<IDX...>){
+                (Self().put(buf, buf_sz, std::get<IDX>(data)), ...);
+            }(buf, buf_sz, std::forward<T>(data), idx_seq);
+        }
+
+        template <class T, std::enable_if_t<types_space::is_noncpyable_linear_container_v<types_space::base_type_t<T>> || types_space::is_nonlinear_container_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            using base_type = types_space::base_type_t<T>;
+            using elem_type = types_space::containee_t<base_type>;
+            
+            auto sz         = types::size_type{};
+            auto isrter     = compact_serializer::utility::get_inserter<base_type>();
+            this->put(buf, buf_sz, sz); 
+            data.reserve(sz);
+
+            for (size_t i = 0; i < sz; ++i){
+                elem_type e{};
+                this->put(buf, buf_sz, e);
+                isrter(data, std::move(e));
+            }
+        }
+
+        template <class T, std::enable_if_t<types_space::is_cpyable_linear_container_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            using base_type = types_space::base_type_t<T>;
+            using elem_type = types_space::containee_t<base_type>;
+            
+            auto sz = types::size_type{};
+            this->put(buf, buf_sz, sz);
+            data.resize(sz);
+
+            void * dst          = data.data();
+            const void * src    = buf;
+            size_t cpy_sz       = sz * sizeof(elem_type); 
+
+            if (buf_sz < cpy_sz){
+                throw dg::compact_serializer::exception_space::corrupted_format();
+            }
+
+            std::memcpy(dst, src, cpy_sz);
+            std::advance(buf, cpy_sz);
+            buf_sz -= cpy_sz;
+        }
+
+        template <class T, std::enable_if_t<types_space::is_reflectible_v<types_space::base_type_t<T>>, bool> = true>
+        void put(const char *& buf, size_t& buf_sz, T&& data) const{
+
+            auto archiver = [&buf, &buf_sz]<class ...Args>(Args&& ...args){
+                (Self().put(buf, buf_sz, std::forward<Args>(args)), ...);
+            };
+
+            data.dg_reflect(archiver);
+        }
+    };
 }
 
 namespace dg::compact_serializer{
 
-    //defined if: involving types c {std_arithmetic, std::tuple and friends, std::vector, std::unordered_map, std::map, std::unrodered_set, std::set, std::optional, std::basic_string, std::unique_ptr, dg_reflectible}
-    //            involving types - except the ones coerced by internal functions - are base types (no const no reference) 
-    
-    //a class is dg_reflectible qualified if (1): it's members are dg_reflectible-qualfied - refer to involving types
-    //                                       (2): implements reflectible: by defining two same-functionality-different-signature public methods - dg_reflect(const Reflector&) const and dg_reflect(const Reflector&)
-    //                                       (3): does not meets other requirements (std::tuple and friends, std::vector<>, ...)
-    //                                       (4): is the final and sole component that implements reflectible
-
-    //undefined if not in defined
-
-    struct bad_encoding_format: std::exception{}; 
-
     template <class T>
     auto size(const T& obj) noexcept -> size_t{
 
-        return archive::Counter{}.count(obj);
+        return dg::compact_serializer::archive::Counter{}.count(obj);
     }
 
     template <class T>
     auto serialize_into(char * buf, const T& obj) noexcept -> char *{
 
-        archive::Forward{}.put(buf, obj);
+        dg::compact_serializer::archive::Forward{}.put(buf, obj);
         return buf;
     } 
 
     template <class T>
     auto deserialize_into(T& obj, const char * buf) -> const char *{
 
-        archive::Backward().put(buf, obj);
+        dg::compact_serializer::archive::Backward{}.put(buf, obj);
         return buf;
     }
 
     template <class T>
     auto integrity_size(const T& obj) noexcept -> size_t{
 
-        return size(obj) + size(types::hash_type{});
+        return compact_serializer::size(obj) + compact_serializer::size(types::hash_type{});
     }
 
     template <class T>
-    auto integrity_serialize_into(char * buf, const T& obj) noexcept -> char *{ 
+    auto integrity_serialize_into(char * buf, const T& obj, uint32_t secret = 0u) noexcept -> char *{ 
         
         char * first                = buf;
-        char * last                 = serialize_into(first, obj);
-        types::hash_type hashed     = utility::hash(first, std::distance(first, last));
-        char * llast                = serialize_into(last, hashed);
+        char * last                 = dg::compact_serializer::serialize_into(first, obj);
+        types::hash_type hashed     = compact_serializer::utility::hash(first, std::distance(first, last), secret);
+        char * llast                = dg::compact_serializer::serialize_into(last, hashed);
 
         return llast;
     }
 
     template <class T>
-    void integrity_deserialize_into(T& obj, const char * buf, size_t sz){
+    void integrity_deserialize_into(T& obj, const char * buf, size_t sz, uint32_t secret = 0u){
 
         if (sz < size(types::hash_type{})){
-            throw bad_encoding_format();
+            throw dg::compact_serializer::exception_space::corrupted_format();
         }
 
+        size_t content_sz           = sz - size(types::hash_type{});
         const char * first          = buf;
-        const char * last           = first + (sz - size(types::hash_type{})); 
-        types::hash_type expected   = {};
-        types::hash_type reality    = utility::hash(first, std::distance(first, last));
-        deserialize_into(expected, last);
+        const char * last           = std::next(first, content_sz);
+        types::hash_type expecting  = {};
+        types::hash_type reality    = compact_serializer::utility::hash(first, content_sz, secret);
 
-        if (expected != reality){
-            throw bad_encoding_format();
+        dg::compact_serializer::deserialize_into(expecting, last);
+
+        if (expecting != reality){
+            throw dg::compact_serializer::exception_space::corrupted_format();
         }
 
-        deserialize_into(obj, first);
+        {
+            const char * iterating_ptr  = first;
+            size_t deserializing_sz     = content_sz;
+            dg::compact_serializer::archive::SafeBackward{}.put(iterating_ptr, deserializing_sz, obj);
+
+            if (deserializing_sz != 0u){
+                throw dg::compact_serializer::exception_space::corrupted_format();
+            }
+        }
+    }
+
+    template <class T>
+    auto capintegrity_size(const T& obj) noexcept -> size_t{
+
+        return dg::compact_serializer::size(uint64_t{}) + dg::compact_serializer::integrity_size(obj);
+    }
+
+    template <class T>
+    auto capintegrity_serialize_into(char * buf, const T& obj, uint32_t secret = 0u) noexcept -> char *{
+
+        char * first    = std::next(buf, dg::compact_serializer::size(uint64_t{}));
+        char * last     = dg::compact_serializer::integrity_serialize_into(first, obj, secret);
+        uint64_t sz     = std::distance(first, last);
+        dg::compact_serializer::serialize_into(buf, sz); 
+
+        return last;
+    }
+
+    template <class T>
+    auto capintegrity_deserialize_into(T& obj, const char * buf, size_t sz, uint32_t secret = 0u) -> const char *{
+
+        if (sz < dg::compact_serializer::size(uint64_t{})){
+            throw dg::compact_serializer::exception_space::corrupted_format();
+        }
+
+        uint64_t obj_sz     = {};
+        const char * first  = dg::compact_serializer::deserialize_into(obj_sz, buf);
+        dg::compact_serializer::integrity_deserialize_into(obj, first, obj_sz, secret);
+
+        return std::next(first, obj_sz);
+    }
+
+    template <class Stream, class T, std::enable_if_t<types_space::is_byte_stream_container_v<Stream>, bool> = true>
+    auto serialize(const T& obj) -> Stream{
+        
+        Stream stream{};
+        stream.resize(dg::compact_serializer::size(obj));
+        dg::compact_serializer::serialize_into(stream.data(), obj);
+
+        return stream;
+    }
+
+    template <class Stream, class T, std::enable_if_t<types_space::is_byte_stream_container_v<Stream>, bool> = true>
+    auto integrity_serialize(const T& obj, uint32_t secret = 0u) -> Stream{
+
+        Stream stream{};
+        stream.resize(dg::compact_serializer::integrity_size(obj));
+        dg::compact_serializer::integrity_serialize_into(stream.data(), obj, secret);
+        
+        return stream;
+    }
+
+    template <class T, class Stream, std::enable_if_t<types_space::is_byte_stream_container_v<Stream>, bool> = true>
+    auto deserialize(const Stream& stream) -> T{
+
+        T rs{};
+        dg::compact_serializer::deserialize_into(rs, stream.data());
+
+        return rs;
+    }
+
+    template <class T, class Stream, std::enable_if_t<types_space::is_byte_stream_container_v<Stream>, bool> = true>
+    auto integrity_deserialize(const Stream& stream, uint32_t secret = 0u) -> T{
+
+        T rs{};
+        dg::compact_serializer::integrity_deserialize_into(rs, stream.data(), stream.size(), secret);
+
+        return rs;
     }
 }
 

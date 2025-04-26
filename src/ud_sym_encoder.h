@@ -12,7 +12,7 @@
 
 namespace dg::ud_sym_encoder{
 
-    struct bad_encoding_format: std::exception{}; 
+    struct corrupted_format: std::exception{}; 
     struct invalid_argument: std::exception{}; 
 
     struct EncoderInterface{
@@ -40,41 +40,39 @@ namespace dg::ud_sym_encoder{
 
         private:
 
-            uint64_t secret;
+            uint64_t secret; //we are susceptible to same-salt attacks, the secret virtualized space protected by the sub-secret (a.k.a. seed) is exposed, we are now vulnerable with the exposed secret, we can easily reverse engineer the encode, to pass through the integrity decode phase, to avoid this from happening, we must specify the sub-secret space size to protect this secret space size
 
         public:
+
+            static inline constexpr uint32_t MURMUR_SERIALIZATION_SECRET = 1042927439ULL;
 
             MurMurEncoder(uint64_t secret) noexcept: secret(secret){}
 
             auto encode(const std::string& arg) -> std::string{
 
                 uint64_t key    = dg::hasher::murmur_hash(arg.data(), arg.size(), this->secret);
-                auto msg        = MurMurMessage{key, arg};
-                auto bstream    = std::string(dg::compact_serializer::integrity_size(msg), ' ');
-                dg::compact_serializer::integrity_serialize_into(bstream.data(), msg);
+                auto msg        = MurMurMessage{.validation_key = key, 
+                                                .encoded        = arg};
 
-                return bstream;
+                return dg::compact_serializer::integrity_serialize<std::string>(msg, MURMUR_SERIALIZATION_SECRET);
             }
 
             auto decode(const std::string& arg) -> std::string{
 
-                MurMurMessage msg{};
-        
                 try{
-                    dg::compact_serializer::integrity_deserialize_into(msg, arg.data(), arg.size());
-                } catch (dg::compact_serializer::bad_encoding_format& err){
-                    throw bad_encoding_format();
+                    MurMurMessage msg       = dg::compact_serializer::integrity_deserialize<MurMurMessage>(arg, MURMUR_SERIALIZATION_SECRET);
+                    uint64_t expected_key   = dg::hasher::murmur_hash(msg.encoded.data(), msg.encoded.size(), this->secret);
+
+                    if (expected_key != msg.validation_key){
+                        throw corrupted_format();
+                    }
+
+                    return std::string(std::move(msg.encoded));
+                } catch (dg::compact_serializer::exception_space::corrupted_format& err){
+                    throw corrupted_format();
                 } catch (...){
                     std::rethrow_exception(std::current_exception());
                 }
-
-                uint64_t expected_key = dg::hasher::murmur_hash(msg.encoded.data(), msg.encoded.size(), this->secret);
-                
-                if (expected_key != msg.validation_key){
-                    throw bad_encoding_format();
-                }
-
-                return msg.encoded;
             }
     };
 
@@ -100,6 +98,7 @@ namespace dg::ud_sym_encoder{
                                                  0xfff7eee000000000ULL, 43,
                                                  6364136223846793005ULL>;
 
+    //we have problems
     class Mt19937Encoder: public virtual EncoderInterface{
 
         private:
@@ -114,25 +113,28 @@ namespace dg::ud_sym_encoder{
                            mt19937 salt_randgen) noexcept: secret(std::move(secret)),
                                                            salt_randgen(std::move(salt_randgen)){}
 
+            static inline constexpr uint32_t MT19937_SERIALIZATION_SECRET = 1422722760ULL;
+
             auto encode(const std::string& arg) -> std::string{
                 
                 uint64_t salt       = this->salt_randgen();
-                uint64_t seed       = this->randomizer_seed(this->secret, salt);
-                auto randomizer     = mt19937{seed};
+                uint64_t subsecret  = this->randomizer_seed(this->secret, salt);
+                auto randomizer     = mt19937{subsecret};
                 auto encoded        = std::string(arg.size(), ' ');
 
                 for (size_t i = 0u; i < arg.size(); ++i){
                     encoded[i] = this->byte_encode(arg[i], randomizer);
                 }
 
-                return this->serialize(Mt19937Message{salt, std::move(encoded)}); 
+                return this->serialize(Mt19937Message{.salt     = salt,
+                                                      .encoded  = std::move(encoded)}); 
             }
 
             auto decode(const std::string& arg) -> std::string{
 
                 Mt19937Message msg  = this->deserialize(arg);                
-                uint64_t seed       = this->randomizer_seed(this->secret, msg.salt);
-                auto randomizer     = mt19937{seed};
+                uint64_t subsecret  = this->randomizer_seed(this->secret, msg.salt);
+                auto randomizer     = mt19937{subsecret};
                 auto decoded        = std::string(msg.encoded.size(), ' ');
 
                 for (size_t i = 0u; i < msg.encoded.size(); ++i){
@@ -186,25 +188,12 @@ namespace dg::ud_sym_encoder{
 
             auto serialize(const Mt19937Message& msg) -> std::string{
 
-                size_t len = dg::trivial_serializer::size(uint64_t{}) + msg.encoded.size(); 
-                std::string rs(len, ' ');
-                char * last = dg::trivial_serializer::serialize_into(rs.data(), msg.salt);
-                std::copy(msg.encoded.begin(), msg.encoded.end(), last);
-
-                return rs;
+                return dg::compact_serializer::integrity_serialize<std::string>(msg, MT19937_SERIALIZATION_SECRET); 
             }
 
             auto deserialize(const std::string& bstream) -> Mt19937Message{
-                
-                if (bstream.size() < dg::trivial_serializer::size(uint64_t{})){
-                    throw bad_encoding_format{};
-                }
 
-                Mt19937Message rs{};
-                const char * last = dg::trivial_serializer::deserialize_into(rs.salt, bstream.data()); 
-                std::copy(last, bstream.data() + bstream.size(), std::back_inserter(rs.encoded));
-
-                return rs;
+                return dg::compact_serializer::integrity_deserialize<Mt19937Message>(bstream, MT19937_SERIALIZATION_SECRET);             
             }
     };
 
@@ -235,6 +224,7 @@ namespace dg::ud_sym_encoder{
     auto spawn_encoder(const std::string& secret) -> std::unique_ptr<EncoderInterface>{
 
         uint64_t uint_secret = dg::hasher::murmur_hash(secret.data(), secret.size());
+
         std::unique_ptr<EncoderInterface> integrity_encoder = std::make_unique<MurMurEncoder>(uint_secret);
         std::unique_ptr<EncoderInterface> unif_dist_encoder = std::make_unique<Mt19937Encoder>(secret, mt19937{}); 
         std::unique_ptr<EncoderInterface> combined_encoder  = std::make_unique<DoubleEncoder>(std::move(integrity_encoder), std::move(unif_dist_encoder));
